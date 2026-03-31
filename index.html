@@ -74,54 +74,52 @@
                 respostas: {}
             });
 
-            // Configuração Firebase
+            // Inicialização do Firebase
             useEffect(() => {
-                const initFirebase = async () => {
+                const startAuth = async () => {
                     try {
                         const { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, getFirestore } = window.FirebaseSDK;
-                        
                         const firebaseConfig = JSON.parse(__firebase_config);
                         const app = initializeApp(firebaseConfig);
                         const auth = getAuth(app);
-                        const db = getFirestore(app);
-
-                        const initAuth = async () => {
-                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                                await signInWithCustomToken(auth, __initial_auth_token);
-                            } else {
-                                await signInAnonymously(auth);
-                            }
-                        };
                         
-                        await initAuth();
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+
                         onAuthStateChanged(auth, (u) => {
                             setUser(u);
                             setLoading(false);
                         });
                     } catch (err) {
-                        console.error("Erro Firebase:", err);
+                        console.error("Erro Crítico Firebase:", err);
                         setLoading(false);
                     }
                 };
-                initFirebase();
+                startAuth();
             }, []);
 
-            // Escuta dados da nuvem
+            // Monitor de Histórico
             useEffect(() => {
                 if (!user) return;
-                const { getFirestore, collection, query, onSnapshot } = window.FirebaseSDK;
-                const db = getFirestore();
-                const appId = typeof __app_id !== 'undefined' ? __app_id : 'pediatria-app';
-                
-                const q = collection(db, 'artifacts', appId, 'public', 'data', 'avaliacoes');
-                
-                const unsubscribe = onSnapshot(q, (snapshot) => {
-                    const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    const sorted = docs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-                    setHistorico(sorted);
-                }, (err) => console.error("Erro Firestore:", err));
+                try {
+                    const { getFirestore, collection, onSnapshot } = window.FirebaseSDK;
+                    const db = getFirestore();
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'pediatria-app';
+                    
+                    const q = collection(db, 'artifacts', appId, 'public', 'data', 'avaliacoes');
+                    
+                    const unsubscribe = onSnapshot(q, (snapshot) => {
+                        const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                        setHistorico(docs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)));
+                    }, (err) => console.warn("Erro ao ler dados:", err));
 
-                return () => unsubscribe();
+                    return () => unsubscribe();
+                } catch (e) {
+                    console.error("Erro Snapshot:", e);
+                }
             }, [user]);
 
             const questoes = [
@@ -151,36 +149,38 @@
                 { id: 24, titulo: "Outro sintoma" }
             ];
 
-            const handleStart = () => {
-                if (formData.nome.trim() && formData.leito.trim() && formData.data) {
-                    setPage('questionario');
-                } else {
-                    setShowError(true);
-                    setTimeout(() => setShowError(false), 3000);
-                }
-            };
-
             const salvarNaNuvem = async () => {
-                if (!user || isSaving) return;
+                if (isSaving) return;
                 
-                setIsSaving(true);
-                const { getFirestore, collection, addDoc } = window.FirebaseSDK;
-                const db = getFirestore();
-                const appId = typeof __app_id !== 'undefined' ? __app_id : 'pediatria-app';
+                // Garantia de autenticação antes de salvar
+                if (!user) {
+                    const { getAuth, signInAnonymously } = window.FirebaseSDK;
+                    const auth = getAuth();
+                    const newUser = await signInAnonymously(auth);
+                    if (!newUser) return;
+                }
 
+                setIsSaving(true);
                 try {
-                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'avaliacoes'), {
-                        nome: formData.nome,
-                        leito: formData.leito,
-                        data: formData.data,
-                        respostas: formData.respostas,
-                        uid: user.uid,
+                    const { getFirestore, collection, addDoc } = window.FirebaseSDK;
+                    const db = getFirestore();
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'pediatria-app';
+
+                    // Limpeza de dados para evitar undefined
+                    const payload = {
+                        nome: String(formData.nome || "Sem Nome"),
+                        leito: String(formData.leito || "0"),
+                        data: String(formData.data || today),
+                        respostas: JSON.parse(JSON.stringify(formData.respostas)), // Deep copy para evitar refs
+                        uid: user?.uid || "anon",
                         timestamp: new Date().toISOString()
-                    });
+                    };
+
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'avaliacoes'), payload);
                     setPage('resumo');
                 } catch (err) {
-                    console.error("Erro ao salvar:", err);
-                    alert("Erro ao guardar na nuvem. Verifique a ligação.");
+                    console.error("Falha ao salvar:", err);
+                    alert("Não foi possível salvar na nuvem. Verifique a internet e tente novamente.");
                 } finally {
                     setIsSaving(false);
                 }
@@ -224,7 +224,7 @@
                     <div className="min-h-screen p-6 max-w-2xl mx-auto">
                         <header className="flex items-center justify-between mb-8">
                             <button onClick={() => setPage('identificacao')} className="p-2 text-slate-400"><Icon name="chevronLeft" /></button>
-                            <h1 className="text-xl font-black text-slate-800 uppercase">Nuvem</h1>
+                            <h1 className="text-xl font-black text-slate-800 uppercase tracking-tighter italic">Nuvem Firestore</h1>
                             <div className="w-10"></div>
                         </header>
                         
@@ -232,7 +232,7 @@
                             {historico.length === 0 ? (
                                 <div className="text-center py-20 text-slate-300">
                                     <Icon name="cloud" className="mx-auto w-12 h-12 mb-4 opacity-20" />
-                                    <p>Nenhuma avaliação guardada.</p>
+                                    <p>A carregar histórico...</p>
                                 </div>
                             ) : historico.map((item) => (
                                 <div key={item.id} className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm flex items-center justify-between">
@@ -240,7 +240,7 @@
                                         <h3 className="font-bold text-slate-800">{item.nome}</h3>
                                         <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Leito {item.leito} • {item.data.split('-').reverse().join('/')}</p>
                                     </div>
-                                    <button onClick={() => exportToCSV(item)} className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
+                                    <button onClick={() => exportToCSV(item)} className="p-3 bg-blue-50 text-blue-600 rounded-2xl active:scale-90 transition-transform">
                                         <Icon name="upload" className="w-5 h-5" />
                                     </button>
                                 </div>
@@ -260,7 +260,7 @@
                             <div className="bg-blue-600 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg">
                                 <Icon name="user" className="text-white w-8 h-8" />
                             </div>
-                            <h1 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Avaliação Pediátrica</h1>
+                            <h1 className="text-2xl font-black text-slate-800 uppercase tracking-tight italic">Avaliação Pediátrica</h1>
                         </header>
                         <div className="w-full max-w-md bg-white rounded-3xl p-8 shadow-sm border border-slate-100 space-y-5">
                             <div>
@@ -289,7 +289,7 @@
                             </div>
 
                             {showError && <p className="text-red-500 text-xs font-bold text-center">Preencha todos os campos!</p>}
-                            <button onClick={handleStart} className="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-blue-100 active:scale-95 transition-transform">Iniciar Avaliação <Icon name="chevronRight" className="w-5 h-5" /></button>
+                            <button onClick={() => (formData.nome && formData.leito) ? setPage('questionario') : setShowError(true)} className="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-blue-100 active:scale-95 transition-transform uppercase tracking-widest text-sm">Próximo Passo <Icon name="chevronRight" className="w-5 h-5" /></button>
                         </div>
                     </div>
                 );
@@ -303,38 +303,49 @@
                 return (
                     <div className="min-h-screen p-6 flex flex-col items-center text-slate-800">
                         <div className="w-full max-w-md bg-white rounded-3xl p-8 shadow-md border border-slate-50 flex-grow mb-6 overflow-y-auto hide-scrollbar">
-                            <span className="text-[10px] font-bold text-blue-600 uppercase tracking-widest block mb-2">Questão {q.id} de {questoes.length}</span>
-                            <h2 className="text-2xl font-black mb-4">{q.titulo}</h2>
-                            <p className="text-sm font-bold text-slate-600 mb-4">Apresenta este sintoma?</p>
-                            <div className="flex gap-3 mb-6">
-                                <button onClick={() => handleResposta(q.id, 'sim', true)} className={`flex-1 py-4 rounded-2xl font-bold border-2 transition-all ${resp.sim === true ? 'bg-blue-600 border-blue-600 text-white' : 'border-slate-100 text-slate-400'}`}>SIM</button>
-                                <button onClick={() => handleResposta(q.id, 'sim', false)} className={`flex-1 py-4 rounded-2xl font-bold border-2 transition-all ${resp.sim === false ? 'bg-slate-800 border-slate-800 text-white' : 'border-slate-100 text-slate-400'}`}>NÃO</button>
+                            <div className="flex justify-between items-center mb-6">
+                                <span className="text-[10px] font-bold text-blue-600 uppercase tracking-widest block">Questão {q.id}/{questoes.length}</span>
+                                <div className="h-1 w-20 bg-slate-100 rounded-full overflow-hidden">
+                                    <div className="h-full bg-blue-500 transition-all duration-300" style={{width: `${(currentIndex+1)/questoes.length*100}%`}}></div>
+                                </div>
                             </div>
+
+                            <h2 className="text-2xl font-black mb-4 tracking-tight">{q.titulo}</h2>
+                            <p className="text-sm font-bold text-slate-400 mb-6 italic">O paciente apresenta este sintoma?</p>
+                            
+                            <div className="flex gap-3 mb-8">
+                                <button onClick={() => handleResposta(q.id, 'sim', true)} className={`flex-1 py-4 rounded-2xl font-black border-2 transition-all ${resp.sim === true ? 'bg-blue-600 border-blue-600 text-white shadow-lg' : 'border-slate-100 text-slate-300 hover:border-slate-200'}`}>SIM</button>
+                                <button onClick={() => handleResposta(q.id, 'sim', false)} className={`flex-1 py-4 rounded-2xl font-black border-2 transition-all ${resp.sim === false ? 'bg-slate-800 border-slate-800 text-white shadow-lg' : 'border-slate-100 text-slate-300 hover:border-slate-200'}`}>NÃO</button>
+                            </div>
+
                             {resp.sim === true && (
-                                <div className="space-y-4 animate-in slide-in-from-top duration-300">
-                                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Intensidade do Incómodo</p>
-                                    <div className="grid grid-cols-3 gap-2">
-                                        {[0,1,2].map(v => (
-                                            <button key={v} onClick={() => handleResposta(q.id, 'intensidade', v)} className={`p-3 rounded-xl font-bold text-[10px] uppercase border-2 transition-all ${resp.intensidade === v ? 'bg-blue-600 border-transparent text-white' : 'bg-slate-50 border-transparent text-slate-400'}`}>
-                                                {v === 0 ? 'Nada' : v === 1 ? 'Um pouco' : 'Muito'}
-                                            </button>
-                                        ))}
+                                <div className="space-y-5 animate-in slide-in-from-top duration-300">
+                                    <div className="p-4 bg-blue-50/50 rounded-2xl border border-blue-100">
+                                        <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest text-center mb-3">Intensidade do Incómodo</p>
+                                        <div className="grid grid-cols-3 gap-2">
+                                            {[0,1,2].map(v => (
+                                                <button key={v} onClick={() => handleResposta(q.id, 'intensidade', v)} className={`p-3 rounded-xl font-bold text-[10px] uppercase border-2 transition-all ${resp.intensidade === v ? 'bg-blue-600 border-transparent text-white' : 'bg-white border-slate-100 text-slate-400'}`}>
+                                                    {v === 0 ? 'Nada' : v === 1 ? 'Pouco' : 'Muito'}
+                                                </button>
+                                            ))}
+                                        </div>
                                     </div>
-                                    <textarea className="w-full p-4 bg-slate-50 rounded-2xl text-sm h-24 resize-none outline-none focus:ring-1 focus:ring-blue-400" placeholder={q.obs_hint || "Observações..."} value={resp.obs} onChange={e => handleResposta(q.id, 'obs', e.target.value)} />
+                                    <textarea className="w-full p-4 bg-slate-50 rounded-2xl text-sm h-28 resize-none outline-none focus:ring-2 focus:ring-blue-100 border border-transparent focus:border-blue-200 transition-all" placeholder={q.obs_hint || "Adicione detalhes clínicos..."} value={resp.obs} onChange={e => handleResposta(q.id, 'obs', e.target.value)} />
                                 </div>
                             )}
                         </div>
                         <div className="w-full max-w-md flex gap-4">
-                            <button onClick={() => currentIndex > 0 ? setCurrentIndex(currentIndex - 1) : setPage('identificacao')} className="flex-1 p-4 bg-white border border-slate-200 rounded-2xl text-slate-500 font-bold flex items-center justify-center gap-2"><Icon name="chevronLeft" className="w-4 h-4" /> Voltar</button>
+                            <button onClick={() => currentIndex > 0 ? setCurrentIndex(currentIndex - 1) : setPage('identificacao')} className="flex-1 p-4 bg-white border border-slate-200 rounded-2xl text-slate-400 font-bold flex items-center justify-center gap-2"><Icon name="chevronLeft" className="w-4 h-4" /></button>
+                            
                             {currentIndex < questoes.length - 1 ? (
-                                <button onClick={() => podeProsseguir && setCurrentIndex(currentIndex + 1)} className={`flex-[2] p-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all ${podeProsseguir ? 'bg-blue-600 text-white shadow-lg active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>Próximo <Icon name="chevronRight" className="w-4 h-4" /></button>
+                                <button onClick={() => podeProsseguir && setCurrentIndex(currentIndex + 1)} className={`flex-[3] p-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all ${podeProsseguir ? 'bg-blue-600 text-white shadow-lg active:scale-95' : 'bg-slate-100 text-slate-300 cursor-not-allowed'}`}>Próxima Pergunta <Icon name="chevronRight" className="w-4 h-4" /></button>
                             ) : (
                                 <button 
                                     onClick={() => podeProsseguir && salvarNaNuvem()} 
                                     disabled={isSaving}
-                                    className={`flex-[2] p-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all ${podeProsseguir && !isSaving ? 'bg-green-600 text-white shadow-lg active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+                                    className={`flex-[3] p-4 rounded-2xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 transition-all ${podeProsseguir && !isSaving ? 'bg-green-500 text-white shadow-lg active:scale-95' : 'bg-slate-100 text-slate-300 cursor-not-allowed'}`}
                                 >
-                                    {isSaving ? 'A guardar...' : 'Finalizar'} <Icon name="cloud" className="w-4 h-4" />
+                                    {isSaving ? 'A Processar...' : 'Finalizar & Salvar'} <Icon name="cloud" className="w-4 h-4" />
                                 </button>
                             )}
                         </div>
@@ -344,20 +355,23 @@
 
             if (page === 'resumo') {
                 return (
-                    <div className="min-h-screen p-6 flex flex-col items-center justify-center">
-                        <div className="w-full max-w-md bg-white rounded-3xl p-8 shadow-xl text-center border border-slate-100">
-                            <div className="bg-green-50 text-green-600 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                                <Icon name="check" className="w-8 h-8" />
+                    <div className="min-h-screen p-6 flex flex-col items-center justify-center bg-slate-50">
+                        <div className="w-full max-w-md bg-white rounded-3xl p-10 shadow-2xl text-center border border-slate-100 animate-in zoom-in duration-300">
+                            <div className="bg-green-100 text-green-600 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
+                                <Icon name="check" className="w-10 h-10" />
                             </div>
-                            <h2 className="text-xl font-black text-slate-800 mb-2">Guardado na Nuvem!</h2>
-                            <p className="text-slate-400 text-sm mb-1">Paciente: <span className="font-bold text-slate-600">{formData.nome}</span></p>
-                            <p className="text-slate-400 text-xs mb-8">Data: {formData.data.split('-').reverse().join('/')}</p>
+                            <h2 className="text-2xl font-black text-slate-800 mb-2">Avaliação Concluída</h2>
+                            <p className="text-slate-400 text-sm mb-8 leading-relaxed">Os dados do paciente <span className="font-bold text-blue-600 uppercase">{formData.nome}</span> foram sincronizados com sucesso.</p>
                             
-                            <button onClick={() => exportToCSV()} className="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 mb-4 hover:bg-blue-700 transition-colors">
-                                <Icon name="upload" className="w-5 h-5" /> Baixar Cópia CSV
-                            </button>
-                            
-                            <button onClick={() => window.location.reload()} className="text-slate-300 font-bold text-[10px] uppercase tracking-widest hover:text-blue-500 transition-colors">Iniciar Nova Avaliação</button>
+                            <div className="space-y-3">
+                                <button onClick={() => exportToCSV()} className="w-full bg-slate-900 text-white font-bold py-4 rounded-2xl shadow-lg flex items-center justify-center gap-3 active:scale-95 transition-all">
+                                    <Icon name="upload" className="w-5 h-5" /> Exportar CSV local
+                                </button>
+                                
+                                <button onClick={() => window.location.reload()} className="w-full bg-white text-slate-400 font-bold py-4 rounded-2xl border border-slate-100 active:scale-95 transition-all">
+                                    Novo Paciente
+                                </button>
+                            </div>
                         </div>
                     </div>
                 );
