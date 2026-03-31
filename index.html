@@ -64,6 +64,7 @@
             const [user, setUser] = useState(null);
             const [historico, setHistorico] = useState([]);
             const [loading, setLoading] = useState(true);
+            const [isSaving, setIsSaving] = useState(false);
 
             const today = new Date().toISOString().split('T')[0];
             const [formData, setFormData] = useState({
@@ -116,7 +117,6 @@
                 
                 const unsubscribe = onSnapshot(q, (snapshot) => {
                     const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    // Ordenar manualmente por data (JS memory)
                     const sorted = docs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
                     setHistorico(sorted);
                 }, (err) => console.error("Erro Firestore:", err));
@@ -161,20 +161,28 @@
             };
 
             const salvarNaNuvem = async () => {
-                if (!user) return;
+                if (!user || isSaving) return;
+                
+                setIsSaving(true);
                 const { getFirestore, collection, addDoc } = window.FirebaseSDK;
                 const db = getFirestore();
                 const appId = typeof __app_id !== 'undefined' ? __app_id : 'pediatria-app';
 
                 try {
                     await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'avaliacoes'), {
-                        ...formData,
+                        nome: formData.nome,
+                        leito: formData.leito,
+                        data: formData.data,
+                        respostas: formData.respostas,
                         uid: user.uid,
                         timestamp: new Date().toISOString()
                     });
                     setPage('resumo');
                 } catch (err) {
+                    console.error("Erro ao salvar:", err);
                     alert("Erro ao guardar na nuvem. Verifique a ligação.");
+                } finally {
+                    setIsSaving(false);
                 }
             };
 
@@ -321,7 +329,13 @@
                             {currentIndex < questoes.length - 1 ? (
                                 <button onClick={() => podeProsseguir && setCurrentIndex(currentIndex + 1)} className={`flex-[2] p-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all ${podeProsseguir ? 'bg-blue-600 text-white shadow-lg active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>Próximo <Icon name="chevronRight" className="w-4 h-4" /></button>
                             ) : (
-                                <button onClick={() => podeProsseguir && salvarNaNuvem()} className={`flex-[2] p-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all ${podeProsseguir ? 'bg-green-600 text-white shadow-lg active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>Finalizar <Icon name="cloud" className="w-4 h-4" /></button>
+                                <button 
+                                    onClick={() => podeProsseguir && salvarNaNuvem()} 
+                                    disabled={isSaving}
+                                    className={`flex-[2] p-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all ${podeProsseguir && !isSaving ? 'bg-green-600 text-white shadow-lg active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+                                >
+                                    {isSaving ? 'A guardar...' : 'Finalizar'} <Icon name="cloud" className="w-4 h-4" />
+                                </button>
                             )}
                         </div>
                     </div>
