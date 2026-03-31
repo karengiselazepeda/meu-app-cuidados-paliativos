@@ -1,0 +1,428 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  onAuthStateChanged, 
+  signInWithCustomToken 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  addDoc 
+} from 'firebase/firestore';
+import { 
+  ClipboardList, 
+  ChevronRight, 
+  ChevronLeft, 
+  CheckCircle2, 
+  Download, 
+  User, 
+  Bed, 
+  Calendar,
+  AlertCircle,
+  Edit3,
+  CloudUpload
+} from 'lucide-react';
+
+// Configuração do Firebase (provida pelo ambiente)
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'pediatria-app';
+
+const App = () => {
+  const [user, setUser] = useState(null);
+  const [page, setPage] = useState('identificacao');
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [showError, setShowError] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [formData, setFormData] = useState({
+    nome: '',
+    leito: '',
+    data: new Date().toLocaleDateString('pt-BR'),
+    respostas: {}
+  });
+
+  // Regra 3: Autenticação antes de qualquer operação
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Erro na autenticação:", err);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  const questoes = [
+    { id: 1, titulo: "Dor", obs_hint: "Local, impacto em movimentação/alimentação (mucosite)" },
+    { id: 2, titulo: "Falta de energia", subtitulo: "Sem disposição, sem vontade de fazer as coisas" },
+    { id: 3, titulo: "Nervoso", subtitulo: "Irritabilidade" },
+    { id: 4, titulo: "Boca seca" },
+    { id: 5, titulo: "Náusea", subtitulo: "Enjoo", obs_hint: "Momento (ante-QT?)" },
+    { id: 6, titulo: "Vómito" },
+    { id: 7, titulo: "Formigamento", obs_hint: "Localização" },
+    { id: 8, titulo: "Dificuldade de dormir" },
+    { id: 9, titulo: "Problemas para urinar", obs_hint: "Uso de sonda vesical?" },
+    { id: 10, titulo: "Falta de ar", obs_hint: "Em que momento?" },
+    { id: 11, titulo: "Constipação", obs_hint: "Aplicar escala de Bristol" },
+    { id: 12, titulo: "Diarreia" },
+    { id: 13, titulo: "Tristeza", obs_hint: "Validar sentimento" },
+    { id: 14, titulo: "Suor" },
+    { id: 15, titulo: "Preocupação" },
+    { id: 16, titulo: "Coceira" },
+    { id: 17, titulo: "Falta de apetite", obs_hint: "Comida hospitalar?" },
+    { id: 18, titulo: "Tonteira" },
+    { id: 19, titulo: "Dificuldade de engolir", obs_hint: "Disfagia, mucosite, SNE" },
+    { id: 20, titulo: "Perda de peso" },
+    { id: 21, titulo: "Queda de cabelo" },
+    { id: 22, titulo: "Inchaço" },
+    { id: 23, titulo: "Alterações na pele" },
+    { id: 24, titulo: "Outro sintoma", obs_hint: "Descreva" }
+  ];
+
+  const handleStart = () => {
+    if (formData.nome.trim() && formData.leito.trim()) {
+      setPage('questionario');
+    } else {
+      setShowError(true);
+      setTimeout(() => setShowError(false), 3000);
+    }
+  };
+
+  const handleResposta = (id, campo, valor) => {
+    setFormData(prev => ({
+      ...prev,
+      respostas: {
+        ...prev.respostas,
+        [id]: {
+          ...(prev.respostas[id] || { sim: null, intensidade: null, obs: '' }),
+          [campo]: valor,
+          ...(campo === 'sim' && valor === false ? { intensidade: null } : {})
+        }
+      }
+    }));
+  };
+
+  const saveToCloud = async () => {
+    if (!user) {
+      alert("Aguarde a autenticação do sistema...");
+      return;
+    }
+    setIsSaving(true);
+    try {
+      // Regra 1: Caminho estrito para dados públicos
+      const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'avaliacoes');
+      await addDoc(colRef, {
+        ...formData,
+        userId: user.uid,
+        timestamp: new Date().toISOString()
+      });
+      alert("Avaliação salva na nuvem com sucesso!");
+      exportToCSV(); 
+    } catch (err) {
+      console.error("Erro ao salvar:", err);
+      alert("Erro ao salvar online. Verifique a sua ligação.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const isCurrentQuestionValid = () => {
+    const r = formData.respostas[questoes[currentIndex].id];
+    if (!r) return false;
+    if (r.sim === false) return true;
+    if (r.sim === true && r.intensidade !== null) return true;
+    return false;
+  };
+
+  const nextQuestion = () => {
+    if (isCurrentQuestionValid()) {
+      if (currentIndex < questoes.length - 1) {
+        setCurrentIndex(currentIndex + 1);
+      } else {
+        setPage('resumo');
+      }
+    }
+  };
+
+  const prevQuestion = () => {
+    if (currentIndex > 0) {
+      setCurrentIndex(currentIndex - 1);
+    } else {
+      setPage('identificacao');
+    }
+  };
+
+  const exportToCSV = () => {
+    let csvContent = "\uFEFF"; 
+    csvContent += "Paciente;Leito;Data;Questao;Sentiu;Intensidade;Observacoes\n";
+
+    questoes.forEach(q => {
+      const r = formData.respostas[q.id] || {};
+      const sentiu = r.sim ? "SIM" : "NÃO";
+      const intensidadeMap = { 0: "Nada", 1: "Um pouco", 2: "Muito" };
+      const intensidade = r.intensidade !== null ? intensidadeMap[r.intensidade] : "";
+      const obs = r.obs ? r.obs.replace(/;/g, ",").replace(/\n/g, " ") : "";
+      csvContent += `${formData.nome};${formData.leito};${formData.data};${q.titulo};${sentiu};${intensidade};${obs}\n`;
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `resumo_${formData.nome.replace(/\s+/g, '_')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const getIntensityColor = (level) => {
+    switch(level) {
+      case 0: return 'bg-blue-500';
+      case 1: return 'bg-amber-500';
+      case 2: return 'bg-red-500';
+      default: return 'bg-slate-400';
+    }
+  };
+
+  const getIntensityText = (level) => {
+    switch(level) {
+      case 0: return 'Nada';
+      case 1: return 'Um pouco';
+      case 2: return 'Muito';
+      default: return '';
+    }
+  };
+
+  const progress = ((currentIndex + 1) / questoes.length) * 100;
+
+  if (page === 'identificacao') {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center p-6 font-sans">
+        <header className="w-full max-w-md text-center my-8">
+          <div className="bg-blue-600 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-200">
+            <ClipboardList className="text-white w-8 h-8" />
+          </div>
+          <h1 className="text-2xl font-bold text-slate-800">Avaliação Pediátrica</h1>
+          <p className="text-slate-500 text-sm italic">Sincronização Online Ativa</p>
+        </header>
+
+        <div className="w-full max-w-md bg-white rounded-3xl p-8 shadow-sm border border-slate-100">
+          <div className="space-y-6">
+            <div>
+              <label className="flex items-center text-xs font-bold text-slate-400 uppercase mb-2">
+                <User className="w-4 h-4 mr-2" /> Nome do Paciente
+              </label>
+              <input 
+                type="text"
+                className="w-full p-4 bg-slate-50 border-none rounded-2xl focus:ring-2 focus:ring-blue-400 outline-none transition-all"
+                placeholder="Ex: Maria Oliveira"
+                value={formData.nome}
+                onChange={(e) => setFormData({...formData, nome: e.target.value})}
+              />
+            </div>
+            <div>
+              <label className="flex items-center text-xs font-bold text-slate-400 uppercase mb-2">
+                <Bed className="w-4 h-4 mr-2" /> Leito
+              </label>
+              <input 
+                type="text"
+                className="w-full p-4 bg-slate-50 border-none rounded-2xl focus:ring-2 focus:ring-blue-400 outline-none transition-all"
+                placeholder="Ex: 205-A"
+                value={formData.leito}
+                onChange={(e) => setFormData({...formData, leito: e.target.value})}
+              />
+            </div>
+            
+            {showError && (
+              <div className="bg-amber-50 text-amber-700 p-3 rounded-xl text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4" /> Por favor, preencha o nome e o leito.
+              </div>
+            )}
+
+            <button 
+              onClick={handleStart}
+              className="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 transition-transform active:scale-95"
+            >
+              Iniciar Avaliação <ChevronRight className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (page === 'questionario') {
+    const q = questoes[currentIndex];
+    const resp = formData.respostas[q.id] || { sim: null, intensidade: null, obs: '' };
+    const canMoveForward = isCurrentQuestionValid();
+
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col p-6 font-sans">
+        <div className="w-full max-w-md mx-auto mb-6">
+          <div className="flex justify-between items-end mb-2">
+            <span className="text-[10px] font-black text-blue-600 uppercase tracking-widest">Sintoma {q.id} de {questoes.length}</span>
+            <span className="text-[10px] font-bold text-slate-400">{Math.round(progress)}%</span>
+          </div>
+          <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+            <div className="bg-blue-600 h-full transition-all duration-300" style={{ width: `${progress}%` }}></div>
+          </div>
+        </div>
+
+        <div className="w-full max-w-md mx-auto bg-white rounded-3xl p-8 shadow-md border border-slate-50 flex-grow mb-6 overflow-y-auto">
+          <h2 className="text-2xl font-black text-slate-800 mb-1 uppercase tracking-tight">{q.titulo}</h2>
+          {q.subtitulo && <p className="text-slate-400 mb-6 italic text-sm">{q.subtitulo}</p>}
+
+          <div className="space-y-6">
+            <div>
+              <p className="text-sm font-bold text-slate-600 mb-4">Apresenta este sintoma?</p>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => handleResposta(q.id, 'sim', true)}
+                  className={`flex-1 py-4 rounded-2xl font-bold border-2 transition-all ${resp.sim === true ? 'bg-blue-600 border-blue-600 text-white shadow-md' : 'bg-white border-slate-100 text-slate-400 hover:bg-slate-50'}`}
+                >
+                  SIM
+                </button>
+                <button 
+                  onClick={() => handleResposta(q.id, 'sim', false)}
+                  className={`flex-1 py-4 rounded-2xl font-bold border-2 transition-all ${resp.sim === false ? 'bg-slate-800 border-slate-800 text-white shadow-md' : 'bg-white border-slate-100 text-slate-400 hover:bg-slate-50'}`}
+                >
+                  NÃO
+                </button>
+              </div>
+            </div>
+
+            {resp.sim === true && (
+              <div className="space-y-6 animate-in slide-in-from-top duration-300">
+                <div className="h-px bg-slate-100 w-full"></div>
+                <div>
+                  <p className="text-[11px] font-black text-slate-400 mb-3 text-center uppercase tracking-widest">Intensidade do Incómodo</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { v: 0, l: 'Nada' },
+                      { v: 1, l: 'Um pouco' },
+                      { v: 2, l: 'Muito' }
+                    ].map((opt) => (
+                      <button
+                        key={opt.v}
+                        onClick={() => handleResposta(q.id, 'intensidade', opt.v)}
+                        className={`p-3 rounded-xl flex flex-col items-center transition-all border-2 ${resp.intensidade === opt.v ? `${getIntensityColor(opt.v)} border-transparent text-white scale-105 shadow-md` : 'bg-slate-50 border-transparent text-slate-400 hover:border-slate-200'}`}
+                      >
+                        <span className="text-[10px] font-black uppercase">{opt.l}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black text-slate-300 mb-2 block uppercase tracking-widest">Observações Clínicas</label>
+                  <textarea 
+                    className="w-full p-4 bg-slate-50 border-none rounded-2xl focus:ring-1 focus:ring-blue-400 outline-none h-24 text-sm resize-none"
+                    placeholder={q.obs_hint || "Adicione detalhes aqui..."}
+                    value={resp.obs}
+                    onChange={(e) => handleResposta(q.id, 'obs', e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="w-full max-w-md mx-auto flex justify-between gap-4">
+          <button 
+            onClick={prevQuestion} 
+            className="flex-1 p-4 bg-white border border-slate-200 rounded-2xl text-slate-500 font-bold flex items-center justify-center gap-2 hover:bg-slate-50 transition-colors"
+          >
+            <ChevronLeft className="w-4 h-4" /> Voltar
+          </button>
+          <button 
+            onClick={nextQuestion}
+            className={`flex-[2] p-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all ${canMoveForward ? 'bg-blue-600 text-white shadow-lg' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+          >
+            {currentIndex === questoes.length - 1 ? 'Revisar' : 'Próximo'} <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (page === 'resumo') {
+    const respostasAtivas = questoes.filter(q => formData.respostas[q.id]?.sim === true);
+
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col p-6 font-sans items-center">
+        <div className="w-full max-w-md bg-white rounded-3xl p-8 shadow-xl border border-slate-100">
+          <div className="text-center mb-6">
+            <div className="bg-blue-50 text-blue-600 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
+              <CheckCircle2 className="w-6 h-6" />
+            </div>
+            <h2 className="text-xl font-black text-slate-800">Avaliação Concluída</h2>
+            <p className="text-slate-400 text-xs mt-1">Sincronizando para: <span className="font-bold text-slate-600">{formData.nome}</span></p>
+          </div>
+
+          <div className="bg-slate-50 rounded-2xl p-4 mb-6 border border-slate-100 overflow-y-auto max-h-64">
+            <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Sintomas Detetados</h3>
+            <div className="space-y-2">
+              {respostasAtivas.map(q => {
+                const r = formData.respostas[q.id];
+                return (
+                  <div key={q.id} className="bg-white p-3 rounded-xl shadow-sm border-l-4" style={{ borderColor: r.intensidade === 0 ? '#3b82f6' : r.intensidade === 1 ? '#f59e0b' : '#ef4444' }}>
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold text-slate-700 text-[11px] uppercase">{q.titulo}</span>
+                      <span className={`text-[9px] px-2 py-0.5 rounded-full font-black text-white ${getIntensityColor(r.intensidade)}`}>
+                        {getIntensityText(r.intensidade).toUpperCase()}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+              {respostasAtivas.length === 0 && <p className="text-center text-slate-400 text-xs italic py-4">Nenhum sintoma de incômodo relatado.</p>}
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <button 
+              onClick={saveToCloud}
+              disabled={isSaving}
+              className="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 hover:bg-blue-700 disabled:opacity-50 transition-all transform active:scale-95"
+            >
+              {isSaving ? "A guardar..." : <><CloudUpload className="w-5 h-5" /> Salvar Online e Gerar Planilha</>}
+            </button>
+            
+            <button 
+              onClick={() => setPage('questionario')} 
+              className="w-full bg-slate-100 text-slate-600 font-bold py-3 rounded-xl flex items-center justify-center gap-2 text-sm hover:bg-slate-200 transition-colors"
+            >
+              <Edit3 className="w-4 h-4" /> Revisar Observações
+            </button>
+
+            <button 
+              onClick={() => {
+                if(window.confirm("Pretende iniciar uma nova avaliação? Todos os dados atuais serão limpos.")) {
+                  setPage('identificacao');
+                  setCurrentIndex(0);
+                  setFormData({ nome: '', leito: '', data: new Date().toLocaleDateString('pt-BR'), respostas: {} });
+                }
+              }}
+              className="w-full text-slate-300 font-bold py-2 text-[10px] uppercase tracking-tighter hover:text-rose-400"
+            >
+              Nova Avaliação
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+};
+
+export default App;
