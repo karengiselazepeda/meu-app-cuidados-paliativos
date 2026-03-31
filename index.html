@@ -3,25 +3,33 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Avaliação Pediátrica</title>
-    <!-- Tailwind CSS para o visual -->
+    <title>Avaliação Pediátrica Pro</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- React e Babel -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, collection, query, onSnapshot, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        window.FirebaseSDK = { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, getFirestore, doc, setDoc, collection, query, onSnapshot, addDoc };
+    </script>
+
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
-        body { font-family: 'Inter', sans-serif; }
+        body { font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
     </style>
 </head>
 <body class="bg-slate-50">
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState } = React;
+        const { useState, useEffect } = React;
 
-        // Ícones em SVG - Corrigidos para evitar erro de JSX
         const Icon = ({ name, className = "w-6 h-6" }) => {
             const icons = {
                 user: <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2M12 7a4 4 0 1 0 0-8 4 4 0 0 0 0 8z" />,
@@ -34,10 +42,13 @@
                         <line x1="3" x2="21" y1="10" y2="10" />
                     </g>
                 ),
+                history: <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8m0 0V4m0 4h4" />,
                 chevronRight: <path d="m9 18 6-6-6-6" />,
                 chevronLeft: <path d="m15 18-6-6 6-6" />,
                 check: <path d="M20 6 9 17l-5-5" />,
-                upload: <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
+                upload: <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />,
+                cloud: <path d="M17.5 19a5.5 5.5 0 0 0 2.5-10.5 8.5 8.5 0 1 0-15 4.5 4.5 4.5 0 0 0 2.5 8.5" />,
+                trash: <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
             };
             return (
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -50,16 +61,68 @@
             const [page, setPage] = useState('identificacao');
             const [currentIndex, setCurrentIndex] = useState(0);
             const [showError, setShowError] = useState(false);
-            
-            // Data atual para o campo de data
-            const today = new Date().toISOString().split('T')[0];
+            const [user, setUser] = useState(null);
+            const [historico, setHistorico] = useState([]);
+            const [loading, setLoading] = useState(true);
 
+            const today = new Date().toISOString().split('T')[0];
             const [formData, setFormData] = useState({
                 nome: '', 
                 leito: '', 
                 data: today, 
                 respostas: {}
             });
+
+            // Configuração Firebase
+            useEffect(() => {
+                const initFirebase = async () => {
+                    try {
+                        const { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, getFirestore } = window.FirebaseSDK;
+                        
+                        const firebaseConfig = JSON.parse(__firebase_config);
+                        const app = initializeApp(firebaseConfig);
+                        const auth = getAuth(app);
+                        const db = getFirestore(app);
+
+                        const initAuth = async () => {
+                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                                await signInWithCustomToken(auth, __initial_auth_token);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+                        };
+                        
+                        await initAuth();
+                        onAuthStateChanged(auth, (u) => {
+                            setUser(u);
+                            setLoading(false);
+                        });
+                    } catch (err) {
+                        console.error("Erro Firebase:", err);
+                        setLoading(false);
+                    }
+                };
+                initFirebase();
+            }, []);
+
+            // Escuta dados da nuvem
+            useEffect(() => {
+                if (!user) return;
+                const { getFirestore, collection, query, onSnapshot } = window.FirebaseSDK;
+                const db = getFirestore();
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'pediatria-app';
+                
+                const q = collection(db, 'artifacts', appId, 'public', 'data', 'avaliacoes');
+                
+                const unsubscribe = onSnapshot(q, (snapshot) => {
+                    const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    // Ordenar manualmente por data (JS memory)
+                    const sorted = docs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+                    setHistorico(sorted);
+                }, (err) => console.error("Erro Firestore:", err));
+
+                return () => unsubscribe();
+            }, [user]);
 
             const questoes = [
                 { id: 1, titulo: "Dor", obs_hint: "Local, impacto em movimentação/alimentação" },
@@ -97,6 +160,24 @@
                 }
             };
 
+            const salvarNaNuvem = async () => {
+                if (!user) return;
+                const { getFirestore, collection, addDoc } = window.FirebaseSDK;
+                const db = getFirestore();
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'pediatria-app';
+
+                try {
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'avaliacoes'), {
+                        ...formData,
+                        uid: user.uid,
+                        timestamp: new Date().toISOString()
+                    });
+                    setPage('resumo');
+                } catch (err) {
+                    alert("Erro ao guardar na nuvem. Verifique a ligação.");
+                }
+            };
+
             const handleResposta = (id, campo, valor) => {
                 setFormData(prev => ({
                     ...prev,
@@ -107,28 +188,67 @@
                 }));
             };
 
-            const exportToCSV = () => {
+            const exportToCSV = (dataParaExportar = formData) => {
                 let csvContent = "\uFEFF"; 
                 csvContent += "Paciente;Leito;Data;Questao;Sentiu;Intensidade;Observacoes\n";
-                
-                const dataFormatada = formData.data.split('-').reverse().join('/');
+                const dataFormatada = dataParaExportar.data.split('-').reverse().join('/');
 
                 questoes.forEach(q => {
-                    const r = formData.respostas[q.id] || {};
+                    const r = dataParaExportar.respostas[q.id] || {};
                     const intensidadeMap = { 0: "Nada", 1: "Um pouco", 2: "Muito" };
-                    csvContent += `${formData.nome};${formData.leito};${dataFormatada};${q.titulo};${r.sim ? "SIM" : "NÃO"};${r.intensidade !== null ? intensidadeMap[r.intensidade] : ""};${r.obs || ""}\n`;
+                    csvContent += `${dataParaExportar.nome};${dataParaExportar.leito};${dataFormatada};${q.titulo};${r.sim ? "SIM" : "NÃO"};${r.intensidade !== null ? intensidadeMap[r.intensidade] : ""};${r.obs || ""}\n`;
                 });
                 const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
                 const link = document.createElement("a");
                 link.href = URL.createObjectURL(blob);
-                link.download = `avaliacao_${formData.nome}.csv`;
+                link.download = `avaliacao_${dataParaExportar.nome}.csv`;
                 link.click();
             };
+
+            if (loading) return (
+                <div className="min-h-screen flex items-center justify-center bg-white">
+                    <div className="w-12 h-12 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin"></div>
+                </div>
+            );
+
+            if (page === 'historico') {
+                return (
+                    <div className="min-h-screen p-6 max-w-2xl mx-auto">
+                        <header className="flex items-center justify-between mb-8">
+                            <button onClick={() => setPage('identificacao')} className="p-2 text-slate-400"><Icon name="chevronLeft" /></button>
+                            <h1 className="text-xl font-black text-slate-800 uppercase">Nuvem</h1>
+                            <div className="w-10"></div>
+                        </header>
+                        
+                        <div className="space-y-4">
+                            {historico.length === 0 ? (
+                                <div className="text-center py-20 text-slate-300">
+                                    <Icon name="cloud" className="mx-auto w-12 h-12 mb-4 opacity-20" />
+                                    <p>Nenhuma avaliação guardada.</p>
+                                </div>
+                            ) : historico.map((item) => (
+                                <div key={item.id} className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm flex items-center justify-between">
+                                    <div>
+                                        <h3 className="font-bold text-slate-800">{item.nome}</h3>
+                                        <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Leito {item.leito} • {item.data.split('-').reverse().join('/')}</p>
+                                    </div>
+                                    <button onClick={() => exportToCSV(item)} className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
+                                        <Icon name="upload" className="w-5 h-5" />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                );
+            }
 
             if (page === 'identificacao') {
                 return (
                     <div className="min-h-screen flex flex-col items-center p-6">
-                        <header className="text-center my-12">
+                        <header className="text-center my-12 relative w-full">
+                            <button onClick={() => setPage('historico')} className="absolute right-0 top-0 p-3 bg-white border border-slate-100 rounded-2xl text-slate-400 shadow-sm active:scale-95 transition-all">
+                                <Icon name="history" className="w-5 h-5" />
+                            </button>
                             <div className="bg-blue-600 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg">
                                 <Icon name="user" className="text-white w-8 h-8" />
                             </div>
@@ -170,9 +290,11 @@
             if (page === 'questionario') {
                 const q = questoes[currentIndex];
                 const resp = formData.respostas[q.id] || { sim: null, intensidade: null, obs: '' };
+                const podeProsseguir = resp.sim === false || (resp.sim === true && resp.intensidade !== null);
+
                 return (
                     <div className="min-h-screen p-6 flex flex-col items-center text-slate-800">
-                        <div className="w-full max-w-md bg-white rounded-3xl p-8 shadow-md border border-slate-50 flex-grow mb-6">
+                        <div className="w-full max-w-md bg-white rounded-3xl p-8 shadow-md border border-slate-50 flex-grow mb-6 overflow-y-auto hide-scrollbar">
                             <span className="text-[10px] font-bold text-blue-600 uppercase tracking-widest block mb-2">Questão {q.id} de {questoes.length}</span>
                             <h2 className="text-2xl font-black mb-4">{q.titulo}</h2>
                             <p className="text-sm font-bold text-slate-600 mb-4">Apresenta este sintoma?</p>
@@ -181,7 +303,7 @@
                                 <button onClick={() => handleResposta(q.id, 'sim', false)} className={`flex-1 py-4 rounded-2xl font-bold border-2 transition-all ${resp.sim === false ? 'bg-slate-800 border-slate-800 text-white' : 'border-slate-100 text-slate-400'}`}>NÃO</button>
                             </div>
                             {resp.sim === true && (
-                                <div className="space-y-4">
+                                <div className="space-y-4 animate-in slide-in-from-top duration-300">
                                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Intensidade do Incómodo</p>
                                     <div className="grid grid-cols-3 gap-2">
                                         {[0,1,2].map(v => (
@@ -196,7 +318,11 @@
                         </div>
                         <div className="w-full max-w-md flex gap-4">
                             <button onClick={() => currentIndex > 0 ? setCurrentIndex(currentIndex - 1) : setPage('identificacao')} className="flex-1 p-4 bg-white border border-slate-200 rounded-2xl text-slate-500 font-bold flex items-center justify-center gap-2"><Icon name="chevronLeft" className="w-4 h-4" /> Voltar</button>
-                            <button onClick={() => currentIndex < questoes.length - 1 ? setCurrentIndex(currentIndex + 1) : setPage('resumo')} className={`flex-[2] p-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all ${(resp.sim === false || (resp.sim === true && resp.intensidade !== null)) ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-400'}`}>Próximo <Icon name="chevronRight" className="w-4 h-4" /></button>
+                            {currentIndex < questoes.length - 1 ? (
+                                <button onClick={() => podeProsseguir && setCurrentIndex(currentIndex + 1)} className={`flex-[2] p-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all ${podeProsseguir ? 'bg-blue-600 text-white shadow-lg active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>Próximo <Icon name="chevronRight" className="w-4 h-4" /></button>
+                            ) : (
+                                <button onClick={() => podeProsseguir && salvarNaNuvem()} className={`flex-[2] p-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all ${podeProsseguir ? 'bg-green-600 text-white shadow-lg active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>Finalizar <Icon name="cloud" className="w-4 h-4" /></button>
+                            )}
                         </div>
                     </div>
                 );
@@ -209,12 +335,12 @@
                             <div className="bg-green-50 text-green-600 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
                                 <Icon name="check" className="w-8 h-8" />
                             </div>
-                            <h2 className="text-xl font-black text-slate-800 mb-2">Avaliação Concluída!</h2>
+                            <h2 className="text-xl font-black text-slate-800 mb-2">Guardado na Nuvem!</h2>
                             <p className="text-slate-400 text-sm mb-1">Paciente: <span className="font-bold text-slate-600">{formData.nome}</span></p>
                             <p className="text-slate-400 text-xs mb-8">Data: {formData.data.split('-').reverse().join('/')}</p>
                             
-                            <button onClick={exportToCSV} className="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 mb-4 hover:bg-blue-700 transition-colors">
-                                <Icon name="upload" className="w-5 h-5" /> Baixar Planilha (CSV)
+                            <button onClick={() => exportToCSV()} className="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 mb-4 hover:bg-blue-700 transition-colors">
+                                <Icon name="upload" className="w-5 h-5" /> Baixar Cópia CSV
                             </button>
                             
                             <button onClick={() => window.location.reload()} className="text-slate-300 font-bold text-[10px] uppercase tracking-widest hover:text-blue-500 transition-colors">Iniciar Nova Avaliação</button>
